@@ -165,7 +165,7 @@ def portfolio_pred_page():
         model_detail.subheader("Random Forest Model")
         try:
             with st.spinner("Training the model..."):
-                model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(portfolio_df)
+                model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(portfolio_df, tickers_list[0])
             model_detail.caption(":material/check_circle: Training complete")
             model_detail.write(f"Accuracy: {accuracy:.2f}")
 
@@ -182,7 +182,7 @@ def portfolio_pred_page():
         model_detail.subheader("LSTM Model")
         try:
             with st.spinner("Training the model..."):
-                model_lstm, history, loss_curve_fig = train_lstm_model_with_graphs(portfolio_df)
+                model_lstm, history, loss_curve_fig, _, _ = train_lstm_model_with_graphs(portfolio_df, tickers_list[0])
             model_detail.caption(":material/check_circle: Training complete")
 
             # Display Training Loss Curve

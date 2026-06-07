@@ -75,20 +75,78 @@ def plot_loss_curve_lstm(history):
     plt.grid()
     plt.show()
 
-# Updated Random Forest training function with custom colors for graphs
-def train_rf_model_with_graphs(data):
+def add_price_action_features(data):
+    # 1. Base Technicals (RSI & MACD)
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    data['RSI'] = 100 - (100 / (1 + rs))
+    
+    exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+    data['MACD'] = exp1 - exp2
+
+    # 2. Candlestick Patterns
+    body = abs(data['Close'] - data['Open'])
+    upper_shadow = data['High'] - data[['Open', 'Close']].max(axis=1)
+    lower_shadow = data[['Open', 'Close']].min(axis=1) - data['Low']
+    avg_body = body.rolling(window=14).mean()
+
+    data['Is_Doji'] = (body < (0.1 * avg_body)).astype(int)
+    data['Is_Hammer'] = ((body < (0.3 * (data['High'] - data['Low']))) &
+                         (lower_shadow > (2 * body)) &
+                         (upper_shadow < (0.1 * body))).astype(int)
+
+    data['Bullish_Engulfing'] = ((data['Close'].shift(1) < data['Open'].shift(1)) & 
+                                 (data['Open'] < data['Close']) & 
+                                 (data['Open'] <= data['Close'].shift(1)) & 
+                                 (data['Close'] >= data['Open'].shift(1))).astype(int)
+
+    data['Bearish_Engulfing'] = ((data['Close'].shift(1) > data['Open'].shift(1)) & 
+                                 (data['Open'] > data['Close']) & 
+                                 (data['Open'] >= data['Close'].shift(1)) & 
+                                 (data['Close'] <= data['Open'].shift(1))).astype(int)
+
+    # 3. Chart Patterns: Moving Average Trends & Crossovers
+    data['SMA_50'] = data['Close'].rolling(window=50).mean()
+    data['SMA_200'] = data['Close'].rolling(window=200).mean()
+    
+    data['Golden_Cross'] = ((data['SMA_50'] > data['SMA_200']) & (data['SMA_50'].shift(1) <= data['SMA_200'].shift(1))).astype(int)
+    data['Death_Cross'] = ((data['SMA_50'] < data['SMA_200']) & (data['SMA_50'].shift(1) >= data['SMA_200'].shift(1))).astype(int)
+
+    # 4. Chart Patterns: Bollinger Bands Breakouts
+    data['SMA_20'] = data['Close'].rolling(window=20).mean()
+    std_20 = data['Close'].rolling(window=20).std()
+    data['BB_Upper'] = data['SMA_20'] + (std_20 * 2)
+    data['BB_Lower'] = data['SMA_20'] - (std_20 * 2)
+    
+    data['BB_Breakout_Upper'] = (data['Close'] > data['BB_Upper']).astype(int)
+    data['BB_Breakout_Lower'] = (data['Close'] < data['BB_Lower']).astype(int)
+
+    return data
+
+# Updated Random Forest training function with Price Action
+def train_rf_model_with_graphs(data, ticker):
+    # Add Price Action Features
+    data = add_price_action_features(data)
+    
     # Feature Engineering
     data['SMA_10'] = data['Close'].rolling(window=10).mean()
-    data['SMA_50'] = data['Close'].rolling(window=50).mean()
     data['Return'] = data['Close'].pct_change()
-    data['Lag_1'] = data['Close'].shift(1)
-    data['Lag_2'] = data['Close'].shift(2)
-    data['Lag_3'] = data['Close'].shift(3)
     data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
     data = data.dropna()
 
     # Splitting Data
-    X = data[['SMA_10', 'SMA_50', 'Return', 'Lag_1', 'Lag_2', 'Lag_3']]
+    features = ['SMA_10', 'Return', 'Volume', 'RSI', 'MACD', 'Is_Doji', 'Is_Hammer', 
+                'Bullish_Engulfing', 'Bearish_Engulfing', 'SMA_50', 'SMA_200', 
+                'Golden_Cross', 'Death_Cross', 'BB_Breakout_Upper', 'BB_Breakout_Lower']
+    
+    # If Volume is not present (e.g. some indices), handle it gracefully
+    if 'Volume' not in data.columns:
+        data['Volume'] = 0
+
+    X = data[features]
     y = data['Target']
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
@@ -113,32 +171,49 @@ def train_rf_model_with_graphs(data):
 
     return model, accuracy, confusion_matrix_fig, precision_recall_fig
 
-# Updated LSTM training function with custom color for loss curve
-def train_lstm_model_with_graphs(data):
-    # Scale data
+# Updated LSTM training function with Price Action
+def train_lstm_model_with_graphs(data, ticker):
+    # Add Price Action Features
+    data = add_price_action_features(data)
+    data = data.dropna()
+    
+    if 'Volume' not in data.columns:
+        data['Volume'] = 0
+        
+    features = ['Close', 'Volume', 'RSI', 'MACD', 'Is_Doji', 'Is_Hammer', 
+                'Bullish_Engulfing', 'Bearish_Engulfing', 'SMA_50', 'SMA_200', 
+                'Golden_Cross', 'Death_Cross', 'BB_Breakout_Upper', 'BB_Breakout_Lower']
+    
+    # Train-Test Split Index
+    train_size_idx = int(len(data) * 0.8)
+    
+    # Scale multivariate data (Fit scaler ONLY on training set to prevent Data Leakage)
     scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+    scaler.fit(data[features].iloc[:train_size_idx].values)
+    
+    # Transform entire dataset to create continuous sequences
+    scaled_data = scaler.transform(data[features].values)
 
-    # Create time series dataset
-    def create_dataset(data, time_step=1):
+    # Create time series dataset for multivariate input
+    def create_dataset(dataset, time_step=1):
         X, y = [], []
-        for i in range(len(data) - time_step - 1):
-            X.append(data[i:(i + time_step), 0])
-            y.append(data[i + time_step, 0])
+        for i in range(len(dataset) - time_step - 1):
+            X.append(dataset[i:(i + time_step), :]) # All features
+            y.append(dataset[i + time_step, 0])     # Target is 'Close' (index 0)
         return np.array(X), np.array(y)
 
     time_step = 50  # Number of past data points used to predict the next value
     X, y = create_dataset(scaled_data, time_step)
-    X = X.reshape(X.shape[0], X.shape[1], 1)
 
-    # Train-Test Split
-    train_size = int(len(X) * 0.8)
-    X_train, X_test = X[:train_size], X[train_size:]
-    y_train, y_test = y[:train_size], y[train_size:]
+    # Train-Test Split Arrays
+    train_size_seq = int(len(X) * 0.8)
+    X_train, X_test = X[:train_size_seq], X[train_size_seq:]
+    y_train, y_test = y[:train_size_seq], y[train_size_seq:]
 
-    # Build LSTM Model
+    # Build Multivariate LSTM Model
     model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], 1)))
+    # X.shape[1] is time_step, X.shape[2] is number of features
+    model.add(LSTM(units=50, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
     model.add(LSTM(units=50, return_sequences=False))
     model.add(Dense(units=1))
     model.compile(optimizer='adam', loss='mean_squared_error')
@@ -158,8 +233,8 @@ def train_lstm_model_with_graphs(data):
                                         mode='lines',
                                         name='Validation Loss',
                                         line=dict(color='#ff7f0e')))  # Custom color for validation loss
-    loss_curve_fig.update_layout(title="LSTM Training Loss Curve",
+    loss_curve_fig.update_layout(title="Multivariate LSTM Training Loss Curve",
                                   xaxis_title="Epoch",
                                   yaxis_title="Loss")
 
-    return model, history, loss_curve_fig
+    return model, history, loss_curve_fig, scaler, scaled_data[-50:]
