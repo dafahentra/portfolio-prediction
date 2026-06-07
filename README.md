@@ -1,78 +1,48 @@
-# 📈 Portfolio Analyzer and Stock Prediction Dashboard 📉
+# Quantitative Portfolio Prediction Dashboard
 
-## Overview
+An institutional-grade portfolio analysis and stock prediction platform built with Python and Streamlit. This application combines modern financial metrics with a 13-dimensional Deep Learning architecture to forecast market movements based on pure Price Action mechanics.
 
-This Streamlit application provides a comprehensive platform for tracking portfolio performance, conducting risk-return analysis, generating stock price predictions, and visualizing financial data with interactive charts. The app leverages modern machine learning techniques and financial metrics to assist users in making informed decisions.
+Demo: https://portfolio-stock-pred.streamlit.app/
 
-https://portfolio-stock-pred.streamlit.app/
+## Architecture
 
-[![Watch the video](./image.png)](https://youtu.be/BNgE11T8JC0)
+This project abandons traditional fundamental analysis in favor of high-density technical feature engineering, simulating the behavior of quantitative algorithmic trading systems. 
 
-## Features
+The machine learning pipeline (Random Forest & Multivariate LSTM) processes 13 dynamic market dimensions:
+- **Momentum Indicators:** RSI, MACD, Volume
+- **Short-Term Candlestick Patterns:** Doji, Hammer, Bullish/Bearish Engulfing
+- **Long-Term Chart Patterns:** SMA 50, SMA 200, Golden Cross, Death Cross
+- **Volatility Anomalies:** Bollinger Bands Breakout (Upper & Lower)
 
-- **Portfolio Tracking**: Input multiple stock tickers to track portfolio performance over time.
-- **Risk-Return Analysis**: Calculate Sharpe and Sortino ratios for individual stocks and the entire portfolio.
-- **Stock Information**: View real-time information such as stock name and current price for each ticker.
-- **Stock Price Predictions**: Predict future stock prices using machine learning models (Random Forest and LSTM).
-- **Candlestick Charts**: Visualize stock price movements with interactive candlestick charts.
-- **Portfolio Optimization Feedback**: Get actionable feedback based on portfolio risk and return metrics.
-- **Model Performance Insights**: Evaluate the accuracy of prediction models with performance graphs.
+## Key Capabilities
 
-## Installation
+- **Autoregressive Price Forecasting:** 7-day future price simulation using a Multivariate LSTM trained on strict, leak-free time-series scaling.
+- **Risk-Return Profiling:** Automated calculation of Sharpe and Sortino ratios for individual assets and the aggregate portfolio.
+- **Interactive Visualization:** Real-time Candlestick rendering and model performance evaluation graphs (Precision-Recall & Loss Curves) using Plotly.
+- **Data Integrity:** Strict forward-only technical calculation to eliminate look-ahead bias and ensure realistic backtest environments.
+
+## Quick Start
 
 1. Clone the repository:
-   ```
-   git clone <repository_url>
-   ```
+```bash
+git clone https://github.com/yourusername/portfolio-prediction.git
+cd portfolio-prediction
+```
 
-2. Navigate to the project directory:
-   ```
-   cd portfolio-prediction
-   ```
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-3. Install the required dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+3. Launch the dashboard:
+```bash
+streamlit run app.py
+```
 
 ## Usage
 
-1. Run the Streamlit app:
-   ```
-   streamlit run app.py
-   ```
-
-2. Open the app in your browser and interact with the various sections:
-   - **Portfolio Prediction**: Input stock tickers separated by commas.
-   - **Risk/Return Analysis**: View Sharpe and Sortino ratios for each stock and the portfolio.
-   - **Predictions and Charts**: Explore 7-day stock price predictions and candlestick charts.
-
-## File Structure
-
-- **app.py**: Main application file.
-- **utils.py**: Contains utility functions for portfolio tracking, financial calculations, and machine learning models.
-- **requirements.txt**: Lists all dependencies required for the app.
-
-## Key Components
-
-### Portfolio Tracking
-- Input stock tickers and view their performance in a line chart.
-- Real-time stock information is displayed in expanders labeled with the stock ticker and name.
-
-### Risk-Return Analysis
-- Compute and display Sharpe and Sortino ratios for each stock and the portfolio.
-- Provide actionable feedback for optimizing the portfolio.
-
-### Stock Price Predictions
-- Train and visualize the performance of Random Forest and LSTM models.
-- View predictions for the next 7 days with accompanying interactive candlestick charts.
-
-### Visualization
-- Generate interactive plots using Plotly for better insights into financial data.
-- Candlestick charts offer a clear view of stock price movements.
-
+Input a comma-separated list of stock tickers (e.g., AAPL, MSFT, TSLA) to initialize the dashboard. The system will automatically construct the 13-dimensional matrix, train the models locally, and output the actionable predictions and risk metrics.
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
-
+This project is licensed under the MIT License.
