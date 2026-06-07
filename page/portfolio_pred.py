@@ -1,193 +1,250 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from utils import track_portfolio, train_rf_model_with_graphs, train_lstm_model_with_graphs, sharpe_ratio, sortino_ratio, format_price
-import plotly.graph_objects as go
 import numpy as np
+from utils import (
+    track_portfolio, train_rf_model_with_graphs,
+    train_lstm_model_with_graphs, sharpe_ratio, sortino_ratio, format_price
+)
+import plotly.graph_objects as go
+
+
+@st.cache_resource(show_spinner=False)
+def _get_trained_lstm_cached(ticker: str):
+    # Cached per ticker so Streamlit doesn't retrain on every re-run
+    data = yf.Ticker(ticker).history(period="10y")
+    return train_lstm_model_with_graphs(data)
+
+
+def _predict_next_7_days(model_lstm, scaler, last_seq, last_real_close):
+    # Autoregressively predicts 7 days; each step feeds its own output as input
+    predictions = []
+    behavior = []
+    current_seq = last_seq.copy()
+    current_close = last_real_close
+
+    for _ in range(7):
+        input_seq = current_seq.reshape(1, 50, current_seq.shape[1])
+        predicted_scaled_close = model_lstm.predict(input_seq, verbose=0)[0][0]
+
+        # MinMaxScaler is feature-independent: zeros in other columns don't
+        # affect the Close column's inverse transform
+        pad_array = np.zeros((1, current_seq.shape[1]))
+        pad_array[0, 0] = predicted_scaled_close
+        predicted_price = scaler.inverse_transform(pad_array)[0][0]
+
+        predictions.append(predicted_price)
+        behavior.append("Increase" if predicted_price > current_close else "Decrease")
+        current_close = predicted_price
+
+        new_day = current_seq[-1].copy()
+        new_day[0] = predicted_scaled_close
+        current_seq = np.append(current_seq[1:], [new_day], axis=0)
+
+    return predictions, behavior
+
 
 def portfolio_pred_page():
     st.header("Portfolio Prediction")
 
-    # Portfolio Tickers Input
-    portfolio_tickers = st.text_input("Enter stock tickers separated by commas (e.g., AAPL, GOOGL, MSFT):")
+    portfolio_tickers = st.text_input(
+        "Enter stock tickers separated by commas (e.g., AAPL, GOOGL, MSFT):"
+    )
 
     st.divider()
 
-    if portfolio_tickers:
-        tickers_list = [ticker.strip() for ticker in portfolio_tickers.split(",")]
-        
-        st.subheader("Portfolio Weighting (%)")
-        st.caption("Enter the percentage weight for each stock. They will be auto-normalized if they don't sum to 100%.")
-        weights_input = []
-        cols = st.columns(len(tickers_list))
-        for i, ticker in enumerate(tickers_list):
-            with cols[i]:
-                w = st.number_input(f"{ticker}", min_value=0.0, max_value=100.0, value=100.0/len(tickers_list), key=f"weight_{ticker}")
-                weights_input.append(w)
-                
-        total_w = sum(weights_input)
-        if total_w == 0:
-            st.error("Total weight cannot be zero.")
-            return
-            
-        # Normalize weights to sum to 1.0
-        weights = [w / total_w for w in weights_input]
+    if not portfolio_tickers:
+        return
 
-        # Fetch portfolio data
-        portfolio_df = track_portfolio(tickers_list)
+    tickers_list = [t.strip().upper() for t in portfolio_tickers.split(",")]
 
-        # Ensure the DataFrame has the expected columns
-        if not all(ticker in portfolio_df.columns for ticker in tickers_list):
-            st.error("Some of the specified tickers are missing in the portfolio data.")
-            return
+    # --- Portfolio Weighting ---
+    st.subheader("Portfolio Weighting (%)")
+    st.caption("Enter the percentage weight for each stock. They will be auto-normalized if they don't sum to 100%.")
+    weights_input = []
+    cols = st.columns(len(tickers_list))
+    for i, ticker in enumerate(tickers_list):
+        with cols[i]:
+            w = st.number_input(
+                f"{ticker}", min_value=0.0, max_value=100.0,
+                value=100.0 / len(tickers_list), key=f"weight_{ticker}"
+            )
+            weights_input.append(w)
 
-        # Add 'Close' column for compatibility (e.g., using the first stock's prices as 'Close')
-        portfolio_df['Close'] = portfolio_df[tickers_list[0]]
+    total_w = sum(weights_input)
+    if total_w == 0:
+        st.error("Total weight cannot be zero.")
+        return
 
-        # Display Stock Information: Name and Today's Price
-        st.subheader("Stock Information")
-        stock_info = []
-        for ticker in tickers_list:
-            stock = yf.Ticker(ticker)
-            todays_data = stock.history(period="1d")
-            stock_info.append({"Ticker": ticker, "Name": stock.info['shortName'], "Price": format_price(todays_data['Close'].iloc[0])})
-        
-        stock_info_df = pd.DataFrame(stock_info)
-        st.dataframe(stock_info_df, hide_index=True, use_container_width=True)
+    weights = [w / total_w for w in weights_input]
 
-        st.divider()
+    # Close-only prices — used for the performance chart and risk metrics
+    portfolio_df = track_portfolio(tickers_list)
+    if not all(ticker in portfolio_df.columns for ticker in tickers_list):
+        st.error("Some of the specified tickers are missing in the portfolio data.")
+        return
 
+    # --- Stock Information ---
+    st.subheader("Stock Information")
+    stock_info = []
+    for ticker in tickers_list:
+        stock = yf.Ticker(ticker)
+        todays_data = stock.history(period="1d")
+        stock_info.append({
+            "Ticker": ticker,
+            "Name": stock.info.get('shortName', ticker),
+            "Price": format_price(todays_data['Close'].iloc[0])
+        })
+    st.dataframe(pd.DataFrame(stock_info), hide_index=True, use_container_width=True)
 
-        # Portfolio Performance: Line chart for each ticker
-        st.subheader("Portfolio Performance")
-        st.line_chart(portfolio_df[tickers_list])
+    st.divider()
 
-        st.divider()
+    # --- Portfolio Performance ---
+    st.subheader("Portfolio Performance")
+    st.line_chart(portfolio_df[tickers_list])
 
-        pred = st.container()
+    st.divider()
 
-        st.divider()
+    # --- Risk / Return Analysis ---
+    st.subheader("Risk/Return Analysis")
+    returns = portfolio_df[tickers_list].pct_change().dropna()
+    portfolio_daily_returns = (returns * weights).sum(axis=1)
 
-        # Risk/Return Analysis: Sharpe and Sortino Ratios
-        st.subheader("Risk/Return Analysis")
-        returns = portfolio_df[tickers_list].pct_change().dropna()
-        
-        # Calculate daily portfolio return using weights
-        portfolio_daily_returns = (returns * weights).sum(axis=1)
+    for i, ticker in enumerate(tickers_list):
+        sharpe = sharpe_ratio(returns[ticker])
+        sortino = sortino_ratio(returns[ticker])
+        sortino_str = f"{sortino:.2f}" if not np.isnan(sortino) else "N/A"
+        indiv_cumulative_return = (
+            portfolio_df[ticker].iloc[-1] / portfolio_df[ticker].iloc[0]
+        ) - 1
+        st.write(
+            f"**{ticker}** (Weight: {weights[i]*100:.1f}%) — "
+            f"Total Return: {indiv_cumulative_return*100:.2f}%, "
+            f"Sharpe Ratio: {sharpe:.2f}, "
+            f"Sortino Ratio: {sortino_str}"
+        )
 
-        for i, ticker in enumerate(tickers_list):
-            sharpe = sharpe_ratio(returns[ticker])
-            sortino = sortino_ratio(returns[ticker])
-            # Cumulative return for individual stock
-            indiv_cumulative_return = (portfolio_df[ticker].iloc[-1] / portfolio_df[ticker].iloc[0]) - 1
-            st.write(f"**{ticker}** (Weight: {weights[i]*100:.1f}%) - Total Return: {indiv_cumulative_return*100:.2f}%, Sharpe Ratio: {sharpe:.2f}, Sortino Ratio: {sortino:.2f}")
-        
-        st.divider()
+    st.divider()
 
-        # Total Portfolio Return and Risk
-        st.subheader("Total Portfolio Return and Risk")
-        portfolio_sharpe = sharpe_ratio(portfolio_daily_returns)
-        portfolio_sortino = sortino_ratio(portfolio_daily_returns)
-        
-        # Cumulative return for the entire portfolio
-        portfolio_cumulative_returns = (1 + portfolio_daily_returns).cumprod()
-        portfolio_total_return = portfolio_cumulative_returns.iloc[-1] - 1
-        
-        st.write(f"Total Portfolio Return: {portfolio_total_return*100:.2f}%")
-        st.write(f"Portfolio Sharpe Ratio: {portfolio_sharpe:.2f}")
-        st.write(f"Portfolio Sortino Ratio: {portfolio_sortino:.2f}")
+    # --- Total Portfolio Metrics ---
+    st.subheader("Total Portfolio Return and Risk")
+    portfolio_sharpe = sharpe_ratio(portfolio_daily_returns)
+    portfolio_sortino = sortino_ratio(portfolio_daily_returns)
 
-        st.divider()
+    portfolio_cumulative_returns = (1 + portfolio_daily_returns).cumprod()
+    portfolio_total_return = portfolio_cumulative_returns.iloc[-1] - 1
 
-        # Feedback System for Optimizing the Portfolio
-        st.subheader("Portfolio Optimization Feedback")
-        feedback = ""
-        if portfolio_sharpe < 1:
-            feedback += "The portfolio's Sharpe Ratio is below 1, which indicates that risk-adjusted returns are low. Consider diversifying or adjusting asset weights.\n"
-        if portfolio_sortino < 1:
-            feedback += "The Sortino Ratio is below 1, suggesting the portfolio has a high downside risk. You may want to consider reducing riskier assets.\n"
-        
-        if portfolio_total_return < 0:
-            feedback += "The portfolio has a negative return over the period. It may be worth reviewing the assets to identify underperformers.\n"
-        
-        if not feedback:
-            feedback = "The portfolio appears to be well-balanced based on risk and return metrics."
+    sortino_display = f"{portfolio_sortino:.2f}" if not np.isnan(portfolio_sortino) else "N/A"
+    st.write(f"Total Portfolio Return: {portfolio_total_return*100:.2f}%")
+    st.write(f"Portfolio Sharpe Ratio: {portfolio_sharpe:.2f}")
+    st.write(f"Portfolio Sortino Ratio: {sortino_display}")
 
-        st.write(feedback)
+    st.divider()
 
-        st.divider()
+    # --- Portfolio Optimization Feedback ---
+    st.subheader("Portfolio Optimization Feedback")
+    feedback_lines = []
+    if not np.isnan(portfolio_sharpe) and portfolio_sharpe < 1:
+        feedback_lines.append(
+            "The portfolio's Sharpe Ratio is below 1, indicating low risk-adjusted returns. "
+            "Consider diversifying or adjusting asset weights."
+        )
+    if not np.isnan(portfolio_sortino) and portfolio_sortino < 1:
+        feedback_lines.append(
+            "The Sortino Ratio is below 1, suggesting high downside risk. "
+            "Consider reducing exposure to more volatile assets."
+        )
+    if portfolio_total_return < 0:
+        feedback_lines.append(
+            "The portfolio has a negative return over the period. "
+            "Review assets to identify underperformers."
+        )
+    if not feedback_lines:
+        feedback_lines.append(
+            "The portfolio appears well-balanced based on risk and return metrics."
+        )
+    for line in feedback_lines:
+        st.write(line)
 
-        # Predictions for the Next 7 Days and Candlestick Chart for Each Stock
-        pred.subheader("Stock Predictions for the Next 7 Days")
-        for ticker in tickers_list:
-            stock = yf.Ticker(ticker)
-            historical_data = stock.history(period="10y")
+    st.divider()
 
-            # Prepare data for predictions (use closing prices for simplicity)
-            historical_data['Date'] = historical_data.index
-            historical_data = historical_data[['Date', 'Close']]
+    # --- 7-Day LSTM Predictions (one model per ticker, results cached) ---
+    st.subheader("Stock Predictions for the Next 7 Days")
 
-            # Generate predictions (for simplicity, assuming we have a function to predict the next 7 days)
-            # You can replace this with your own prediction model like LSTM or any suitable model
-            predictions = historical_data[['Date', 'Close']].tail(30)  # Get the last 30 days for predictions
+    # Full OHLCV per ticker — stored here to reuse in the sidebar RF section below,
+    # avoiding a second identical API call for tickers_list[0]
+    full_data: dict[str, pd.DataFrame] = {}
 
-            # Add next 7 days' prediction (this part can be enhanced by actual prediction models like LSTM)
-            predicted_dates = pd.date_range(predictions['Date'].max(), periods=8, freq='D')[1:]
-            predicted_prices = np.round(np.random.uniform(
-                low=predictions['Close'].iloc[-1] * 0.95,
-                high=predictions['Close'].iloc[-1] * 1.05,
-                size=7
-            ), 2)
+    for ticker in tickers_list:
+        stock = yf.Ticker(ticker)
+        historical_data = stock.history(period="10y")
+        full_data[ticker] = historical_data
 
-            prediction_df = pd.DataFrame({
-                'Date': predicted_dates,
-                'Predicted Close': [f"${price}" for price in predicted_prices]
-            })
+        with st.spinner(f"Preparing LSTM for {ticker}..."):
+            model_lstm, _, _, scaler, last_seq = _get_trained_lstm_cached(ticker)
 
-            # Display stock information inside an expander with stock ticker and name
-            with pred.expander(f"{ticker} - {stock.info['shortName']}"):
-                st.write(f"{ticker} - Predicted Prices for the Next 7 Days")
-                st.dataframe(prediction_df, use_container_width=True, hide_index=True)
+        last_real_close = historical_data['Close'].iloc[-1]
+        preds, behavior = _predict_next_7_days(model_lstm, scaler, last_seq, last_real_close)
 
-                # Plot Candlestick Chart for the Stock
-                fig = go.Figure(data=[go.Candlestick(x=historical_data['Date'],
-                                                     open=historical_data['Close'],
-                                                     high=historical_data['Close'] * 1.05,
-                                                     low=historical_data['Close'] * 0.95,
-                                                     close=historical_data['Close'])])
+        future_dates = pd.date_range(
+            start=historical_data.index[-1] + pd.Timedelta(days=1), periods=7
+        )
+        prediction_df = pd.DataFrame({
+            'Date': future_dates.strftime('%Y-%m-%d'),
+            'Predicted Close': [f"${p:.2f}" for p in preds],
+            'Behavior': behavior
+        })
 
-                fig.update_layout(title=f"{ticker} Candlestick Chart", xaxis_title="Date", yaxis_title="Price")
-                st.plotly_chart(fig)
+        with st.expander(f"{ticker} — {stock.info.get('shortName', ticker)}"):
+            st.write(f"{ticker} — Predicted Prices for the Next 7 Days")
+            st.dataframe(prediction_df, use_container_width=True, hide_index=True)
 
-        # Train and Display Random Forest Model
-        st.sidebar.divider()
-        model_detail = st.sidebar.container(border=True)
-        model_detail.subheader("Random Forest Model")
-        try:
-            with st.spinner("Training the model..."):
-                model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(portfolio_df, tickers_list[0])
-            model_detail.caption(":material/check_circle: Training complete")
-            model_detail.write(f"Accuracy: {accuracy:.2f}")
+            # Candlestick chart using actual OHLC data
+            fig = go.Figure(data=[go.Candlestick(
+                x=historical_data.index,
+                open=historical_data['Open'],
+                high=historical_data['High'],
+                low=historical_data['Low'],
+                close=historical_data['Close']
+            )])
+            fig.update_layout(
+                title=f"{ticker} Candlestick Chart",
+                xaxis_title="Date", yaxis_title="Price"
+            )
+            st.plotly_chart(fig)
 
-            # Random Forest Graphs
-            model_detail.subheader("Random Forest Performance Graphs")
-            with model_detail.popover("Confusion Matrix", use_container_width=True):
-                st.plotly_chart(confusion_matrix_fig, use_container_width=True)
-            with model_detail.popover("Precision-Recall Curve", use_container_width=True):
-                st.plotly_chart(precision_recall_fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error training Random Forest model: {e}")
+    # --- Sidebar: Model Details ---
+    st.sidebar.divider()
+    model_detail = st.sidebar.container(border=True)
 
-        # Train and Display LSTM Model
-        model_detail.subheader("LSTM Model")
-        try:
-            with st.spinner("Training the model..."):
-                model_lstm, history, loss_curve_fig, _, _ = train_lstm_model_with_graphs(portfolio_df, tickers_list[0])
-            model_detail.caption(":material/check_circle: Training complete")
+    # Reuse the data already fetched in the prediction loop above
+    first_ticker_full_data = full_data[tickers_list[0]]
 
-            # Display Training Loss Curve
-            model_detail.subheader("LSTM Performance Graphs")
-            with model_detail.popover("Training Loss Curve", use_container_width=True):
-                st.plotly_chart(loss_curve_fig, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error training LSTM model: {e}")
+    model_detail.subheader("Random Forest Model")
+    try:
+        with st.spinner("Training Random Forest..."):
+            _, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(
+                first_ticker_full_data
+            )
+        model_detail.caption(":material/check_circle: Training complete")
+        model_detail.write(f"CV Accuracy (5-fold TimeSeriesCV): {accuracy:.2f}")
+
+        model_detail.subheader("Random Forest Performance Graphs")
+        with model_detail.popover("Confusion Matrix", use_container_width=True):
+            st.plotly_chart(confusion_matrix_fig, use_container_width=True)
+        with model_detail.popover("Precision-Recall Curve", use_container_width=True):
+            st.plotly_chart(precision_recall_fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error training Random Forest model: {e}")
+
+    model_detail.subheader("LSTM Model")
+    try:
+        # Reuse cached model — no retraining
+        _, history_obj, loss_curve_fig, _, _ = _get_trained_lstm_cached(tickers_list[0])
+        model_detail.caption(":material/check_circle: Training complete")
+
+        model_detail.subheader("LSTM Performance Graphs")
+        with model_detail.popover("Training Loss Curve", use_container_width=True):
+            st.plotly_chart(loss_curve_fig, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error loading LSTM model: {e}")
