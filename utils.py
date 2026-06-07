@@ -37,7 +37,7 @@ def sortino_ratio(returns, risk_free_rate=0.02, target_return=0):
 
 # Portfolio Tracker
 def track_portfolio(portfolio_tickers):
-    portfolio = {ticker: yf.Ticker(ticker).history(period="1y")['Close'] for ticker in portfolio_tickers}
+    portfolio = {ticker: yf.Ticker(ticker).history(period="10y")['Close'] for ticker in portfolio_tickers}
     portfolio_df = pd.DataFrame(portfolio)
     return portfolio_df
 

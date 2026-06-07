@@ -17,8 +17,18 @@ def single_stock_page():
     if ticker:
         # Fetch stock data from Yahoo Finance
         stock = yf.Ticker(ticker)
-        data = stock.history(period="1y")
-        today_price = stock.history(period="1d")['Close'][-1]
+        data = stock.history(period="10y")
+        
+        if data.empty:
+            st.error(f"No data found for ticker '{ticker}'. Please enter a valid stock ticker.")
+            return
+            
+        today_data = stock.history(period="1d")
+        if not today_data.empty:
+            today_price = today_data['Close'][-1]
+        else:
+            today_price = data['Close'][-1] # Fallback to last known price
+            
         stock_info = stock.info
 
         # Display stock information
@@ -55,8 +65,9 @@ def single_stock_page():
 
         model_detail = st.sidebar.container(border=True)
         model_detail.subheader("Random Forest Model")
-        model_detail.caption("Training the model...")
-        model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(data)
+        with st.spinner("Training the model..."):
+            model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(data)
+        model_detail.caption(":material/check_circle: Training complete")
         model_detail.write(f"Accuracy: {accuracy:.2f}")
 
         # Random Forest Graphs (Confusion Matrix and Precision-Recall Curve)
@@ -68,8 +79,9 @@ def single_stock_page():
 
         # Train and Display LSTM Model
         model_detail.subheader("LSTM Model")
-        model_detail.caption("Training the model...")
-        model_lstm, history, loss_curve_fig = train_lstm_model_with_graphs(data)
+        with st.spinner("Training the model..."):
+            model_lstm, history, loss_curve_fig = train_lstm_model_with_graphs(data)
+        model_detail.caption(":material/check_circle: Training complete")
 
         # Display Training Loss Curve
         model_detail.subheader("LSTM Performance Graphs")

@@ -15,6 +15,24 @@ def portfolio_pred_page():
 
     if portfolio_tickers:
         tickers_list = [ticker.strip() for ticker in portfolio_tickers.split(",")]
+        
+        st.subheader("Portfolio Weighting (%)")
+        st.caption("Enter the percentage weight for each stock. They will be auto-normalized if they don't sum to 100%.")
+        weights_input = []
+        cols = st.columns(len(tickers_list))
+        for i, ticker in enumerate(tickers_list):
+            with cols[i]:
+                w = st.number_input(f"{ticker}", min_value=0.0, max_value=100.0, value=100.0/len(tickers_list), key=f"weight_{ticker}")
+                weights_input.append(w)
+                
+        total_w = sum(weights_input)
+        if total_w == 0:
+            st.error("Total weight cannot be zero.")
+            return
+            
+        # Normalize weights to sum to 1.0
+        weights = [w / total_w for w in weights_input]
+
         # Fetch portfolio data
         portfolio_df = track_portfolio(tickers_list)
 
@@ -42,7 +60,7 @@ def portfolio_pred_page():
 
         # Portfolio Performance: Line chart for each ticker
         st.subheader("Portfolio Performance")
-        st.line_chart(portfolio_df)
+        st.line_chart(portfolio_df[tickers_list])
 
         st.divider()
 
@@ -52,21 +70,30 @@ def portfolio_pred_page():
 
         # Risk/Return Analysis: Sharpe and Sortino Ratios
         st.subheader("Risk/Return Analysis")
-        returns = portfolio_df.pct_change().dropna()
-        total_returns = 0
-        for ticker in tickers_list:
+        returns = portfolio_df[tickers_list].pct_change().dropna()
+        
+        # Calculate daily portfolio return using weights
+        portfolio_daily_returns = (returns * weights).sum(axis=1)
+
+        for i, ticker in enumerate(tickers_list):
             sharpe = sharpe_ratio(returns[ticker])
             sortino = sortino_ratio(returns[ticker])
-            total_returns += returns[ticker].sum()
-            st.write(f"{ticker} - Sharpe Ratio: {sharpe:.2f}, Sortino Ratio: {sortino:.2f}")
+            # Cumulative return for individual stock
+            indiv_cumulative_return = (portfolio_df[ticker].iloc[-1] / portfolio_df[ticker].iloc[0]) - 1
+            st.write(f"**{ticker}** (Weight: {weights[i]*100:.1f}%) - Total Return: {indiv_cumulative_return*100:.2f}%, Sharpe Ratio: {sharpe:.2f}, Sortino Ratio: {sortino:.2f}")
         
         st.divider()
 
         # Total Portfolio Return and Risk
         st.subheader("Total Portfolio Return and Risk")
-        portfolio_sharpe = sharpe_ratio(returns.sum(axis=1))
-        portfolio_sortino = sortino_ratio(returns.sum(axis=1))
-        st.write(f"Total Portfolio Return: {total_returns:.2f}")
+        portfolio_sharpe = sharpe_ratio(portfolio_daily_returns)
+        portfolio_sortino = sortino_ratio(portfolio_daily_returns)
+        
+        # Cumulative return for the entire portfolio
+        portfolio_cumulative_returns = (1 + portfolio_daily_returns).cumprod()
+        portfolio_total_return = portfolio_cumulative_returns.iloc[-1] - 1
+        
+        st.write(f"Total Portfolio Return: {portfolio_total_return*100:.2f}%")
         st.write(f"Portfolio Sharpe Ratio: {portfolio_sharpe:.2f}")
         st.write(f"Portfolio Sortino Ratio: {portfolio_sortino:.2f}")
 
@@ -80,7 +107,7 @@ def portfolio_pred_page():
         if portfolio_sortino < 1:
             feedback += "The Sortino Ratio is below 1, suggesting the portfolio has a high downside risk. You may want to consider reducing riskier assets.\n"
         
-        if total_returns < 0:
+        if portfolio_total_return < 0:
             feedback += "The portfolio has a negative return over the period. It may be worth reviewing the assets to identify underperformers.\n"
         
         if not feedback:
@@ -94,7 +121,7 @@ def portfolio_pred_page():
         pred.subheader("Stock Predictions for the Next 7 Days")
         for ticker in tickers_list:
             stock = yf.Ticker(ticker)
-            historical_data = stock.history(period="1y")
+            historical_data = stock.history(period="10y")
 
             # Prepare data for predictions (use closing prices for simplicity)
             historical_data['Date'] = historical_data.index
@@ -136,9 +163,10 @@ def portfolio_pred_page():
         st.sidebar.divider()
         model_detail = st.sidebar.container(border=True)
         model_detail.subheader("Random Forest Model")
-        model_detail.caption("Training the model...")
         try:
-            model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(portfolio_df)
+            with st.spinner("Training the model..."):
+                model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(portfolio_df)
+            model_detail.caption(":material/check_circle: Training complete")
             model_detail.write(f"Accuracy: {accuracy:.2f}")
 
             # Random Forest Graphs
@@ -152,9 +180,10 @@ def portfolio_pred_page():
 
         # Train and Display LSTM Model
         model_detail.subheader("LSTM Model")
-        model_detail.caption("Training the model...")
         try:
-            model_lstm, history, loss_curve_fig = train_lstm_model_with_graphs(portfolio_df)
+            with st.spinner("Training the model..."):
+                model_lstm, history, loss_curve_fig = train_lstm_model_with_graphs(portfolio_df)
+            model_detail.caption(":material/check_circle: Training complete")
 
             # Display Training Loss Curve
             model_detail.subheader("LSTM Performance Graphs")
