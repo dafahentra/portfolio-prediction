@@ -24,7 +24,7 @@ def _predict_next_7_days(model_lstm, scaler, last_seq, last_real_close):
     current_close = last_real_close
 
     for _ in range(7):
-        input_seq = current_seq.reshape(1, 50, current_seq.shape[1])
+        input_seq = current_seq.reshape(1, current_seq.shape[0], current_seq.shape[1])
         predicted_scaled_close = model_lstm.predict(input_seq, verbose=0)[0][0]
 
         # MinMaxScaler is feature-independent: zeros in other columns don't
@@ -240,7 +240,7 @@ def portfolio_pred_page():
     model_detail.subheader("LSTM Model")
     try:
         # Reuse cached model — no retraining
-        _, history_obj, loss_curve_fig, _, _ = _get_trained_lstm_cached(tickers_list[0])
+        _, _, loss_curve_fig, _, _ = _get_trained_lstm_cached(tickers_list[0])
         model_detail.caption(":material/check_circle: Training complete")
 
         model_detail.subheader("LSTM Performance Graphs")

@@ -9,7 +9,7 @@ import numpy as np
 def _scale_feature(scaler, value, feature_idx):
     # Per-feature scaling using the scaler's stored min/max; clipped to [0, 1]
     if np.isnan(value):
-        return float(scaler.data_min_[feature_idx])
+        return 0.0
     feature_range = scaler.data_max_[feature_idx] - scaler.data_min_[feature_idx]
     if feature_range == 0:
         return 0.0
@@ -74,7 +74,7 @@ def single_stock_page():
 
         model_detail.subheader("Random Forest Model")
         with st.spinner("Training the model..."):
-            model_rf, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(data)
+            _, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(data)
         model_detail.caption(":material/check_circle: Training complete")
         model_detail.write(f"CV Accuracy (5-fold TimeSeriesCV): {accuracy:.2f}")
 
@@ -86,7 +86,7 @@ def single_stock_page():
 
         model_detail.subheader("LSTM Model")
         with st.spinner("Training the model..."):
-            model_lstm, history, loss_curve_fig, scaler, last_seq = train_lstm_model_with_graphs(data)
+            model_lstm, _, loss_curve_fig, scaler, last_seq = train_lstm_model_with_graphs(data)
         model_detail.caption(":material/check_circle: Training complete")
 
         model_detail.subheader("LSTM Performance Graphs")
@@ -118,7 +118,7 @@ def single_stock_page():
         close_history = list(data['Close'].values[-250:])
 
         for _ in range(7):
-            input_seq = current_seq.reshape(1, 50, current_seq.shape[1])
+            input_seq = current_seq.reshape(1, current_seq.shape[0], current_seq.shape[1])
             predicted_scaled_close = model_lstm.predict(input_seq, verbose=0)[0][0]
 
             # Inverse-transform Close only (MinMaxScaler is per-feature)
