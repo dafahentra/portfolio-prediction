@@ -4,44 +4,26 @@ import pandas as pd
 import numpy as np
 from utils import (
     track_portfolio, train_rf_model_with_graphs,
-    train_lstm_model_with_graphs, sharpe_ratio, sortino_ratio, format_price
+    train_lstm_model_with_graphs, sharpe_ratio, sortino_ratio, format_price,
+    predict_next_7_days
 )
 import plotly.graph_objects as go
 
 
 @st.cache_resource(show_spinner=False)
 def _get_trained_lstm_cached(ticker: str):
-    # Cached per ticker so Streamlit doesn't retrain on every re-run
+    """
+    Cached per-ticker LSTM training; avoids retraining on every Streamlit re-run.
+
+    FIX #10: raises a clear ValueError if yfinance returns no data for
+    the ticker, instead of propagating a cryptic crash from inside
+    train_lstm_model_with_graphs.
+    """
     data = yf.Ticker(ticker).history(period="10y")
+    if data.empty:
+        raise ValueError(f"No historical data found for ticker '{ticker}'. "
+                         "Check that the symbol is valid.")
     return train_lstm_model_with_graphs(data)
-
-
-def _predict_next_7_days(model_lstm, scaler, last_seq, last_real_close):
-    # Autoregressively predicts 7 days; each step feeds its own output as input
-    predictions = []
-    behavior = []
-    current_seq = last_seq.copy()
-    current_close = last_real_close
-
-    for _ in range(7):
-        input_seq = current_seq.reshape(1, current_seq.shape[0], current_seq.shape[1])
-        predicted_scaled_close = model_lstm.predict(input_seq, verbose=0)[0][0]
-
-        # MinMaxScaler is feature-independent: zeros in other columns don't
-        # affect the Close column's inverse transform
-        pad_array = np.zeros((1, current_seq.shape[1]))
-        pad_array[0, 0] = predicted_scaled_close
-        predicted_price = scaler.inverse_transform(pad_array)[0][0]
-
-        predictions.append(predicted_price)
-        behavior.append("Increase" if predicted_price > current_close else "Decrease")
-        current_close = predicted_price
-
-        new_day = current_seq[-1].copy()
-        new_day[0] = predicted_scaled_close
-        current_seq = np.append(current_seq[1:], [new_day], axis=0)
-
-    return predictions, behavior
 
 
 def portfolio_pred_page():
@@ -78,7 +60,7 @@ def portfolio_pred_page():
 
     weights = [w / total_w for w in weights_input]
 
-    # Close-only prices — used for the performance chart and risk metrics
+    # FIX #8: track_portfolio now uses one batched yf.download call
     portfolio_df = track_portfolio(tickers_list)
     if not all(ticker in portfolio_df.columns for ticker in tickers_list):
         st.error("Some of the specified tickers are missing in the portfolio data.")
@@ -111,6 +93,7 @@ def portfolio_pred_page():
     portfolio_daily_returns = (returns * weights).sum(axis=1)
 
     for i, ticker in enumerate(tickers_list):
+        # FIX #1: sortino_ratio now uses the correct semi-deviation formula
         sharpe = sharpe_ratio(returns[ticker])
         sortino = sortino_ratio(returns[ticker])
         sortino_str = f"{sortino:.2f}" if not np.isnan(sortino) else "N/A"
@@ -171,8 +154,6 @@ def portfolio_pred_page():
     # --- 7-Day LSTM Predictions (one model per ticker, results cached) ---
     st.subheader("Stock Predictions for the Next 7 Days")
 
-    # Full OHLCV per ticker — stored here to reuse in the sidebar RF section below,
-    # avoiding a second identical API call for tickers_list[0]
     full_data: dict[str, pd.DataFrame] = {}
 
     for ticker in tickers_list:
@@ -180,11 +161,25 @@ def portfolio_pred_page():
         historical_data = stock.history(period="10y")
         full_data[ticker] = historical_data
 
-        with st.spinner(f"Preparing LSTM for {ticker}..."):
-            model_lstm, _, _, scaler, last_seq = _get_trained_lstm_cached(ticker)
+        # FIX #10: wrap cache call in try/except for user-friendly error messages
+        try:
+            with st.spinner(f"Preparing LSTM for {ticker}..."):
+                # FIX #9: _get_trained_lstm_cached now returns 6 values
+                model_lstm, _, _, scaler, last_seq, _ = _get_trained_lstm_cached(ticker)
+        except Exception as e:
+            st.error(f"Could not prepare LSTM for {ticker}: {e}")
+            continue
 
-        last_real_close = historical_data['Close'].iloc[-1]
-        preds, behavior = _predict_next_7_days(model_lstm, scaler, last_seq, last_real_close)
+        # FIX #2 & FIX #5: replaced _predict_next_7_days (which froze all
+        # features at last real day values) with the unified predict_next_7_days
+        # that properly updates all computable indicators each step.
+        close_history = list(historical_data['Close'].values[-250:])
+        volume_mean = float(historical_data['Volume'].mean()) if 'Volume' in historical_data.columns else 0.0
+
+        last_real_close = float(historical_data['Close'].iloc[-1])
+        preds, behavior = predict_next_7_days(
+            model_lstm, scaler, last_seq, last_real_close, close_history, volume_mean
+        )
 
         future_dates = pd.date_range(
             start=historical_data.index[-1] + pd.Timedelta(days=1), periods=7
@@ -199,7 +194,6 @@ def portfolio_pred_page():
             st.write(f"{ticker} — Predicted Prices for the Next 7 Days")
             st.dataframe(prediction_df, use_container_width=True, hide_index=True)
 
-            # Candlestick chart using actual OHLC data
             fig = go.Figure(data=[go.Candlestick(
                 x=historical_data.index,
                 open=historical_data['Open'],
@@ -217,31 +211,33 @@ def portfolio_pred_page():
     st.sidebar.divider()
     model_detail = st.sidebar.container(border=True)
 
-    # Reuse the data already fetched in the prediction loop above
-    first_ticker_full_data = full_data[tickers_list[0]]
+    first_ticker_full_data = full_data.get(tickers_list[0])
 
     model_detail.subheader("Random Forest Model")
-    try:
-        with st.spinner("Training Random Forest..."):
-            _, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(
-                first_ticker_full_data
-            )
-        model_detail.caption(":material/check_circle: Training complete")
-        model_detail.write(f"CV Accuracy (5-fold TimeSeriesCV): {accuracy:.2f}")
+    if first_ticker_full_data is not None and not first_ticker_full_data.empty:
+        try:
+            with st.spinner("Training Random Forest..."):
+                _, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(
+                    first_ticker_full_data
+                )
+            model_detail.caption(":material/check_circle: Training complete")
+            model_detail.write(f"CV Accuracy (5-fold TimeSeriesCV): {accuracy:.2f}")
 
-        model_detail.subheader("Random Forest Performance Graphs")
-        with model_detail.popover("Confusion Matrix", use_container_width=True):
-            st.plotly_chart(confusion_matrix_fig, use_container_width=True)
-        with model_detail.popover("Precision-Recall Curve", use_container_width=True):
-            st.plotly_chart(precision_recall_fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error training Random Forest model: {e}")
+            model_detail.subheader("Random Forest Performance Graphs")
+            with model_detail.popover("Confusion Matrix", use_container_width=True):
+                st.plotly_chart(confusion_matrix_fig, use_container_width=True)
+            with model_detail.popover("Precision-Recall Curve", use_container_width=True):
+                st.plotly_chart(precision_recall_fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error training Random Forest model: {e}")
 
     model_detail.subheader("LSTM Model")
     try:
-        # Reuse cached model — no retraining
-        _, _, loss_curve_fig, _, _ = _get_trained_lstm_cached(tickers_list[0])
+        # FIX #9: unpack 6th return value to display meaningful test metrics
+        _, _, loss_curve_fig, _, _, lstm_metrics = _get_trained_lstm_cached(tickers_list[0])
         model_detail.caption(":material/check_circle: Training complete")
+        model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")
+        model_detail.write(f"Directional Accuracy: {lstm_metrics['directional_accuracy']:.1%}")
 
         model_detail.subheader("LSTM Performance Graphs")
         with model_detail.popover("Training Loss Curve", use_container_width=True):

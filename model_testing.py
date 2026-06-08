@@ -35,9 +35,11 @@ X_train_class, X_test_class, y_train_class, y_test_class = train_test_split(X_cl
 X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, shuffle=False)
 
 # Initialize models
+# FIX #6: removed deprecated use_label_encoder=False parameter
+# (removed in XGBoost >= 2.0; use eval_metric directly instead)
 models_class = {
     "Random Forest Classifier": RandomForestClassifier(n_estimators=100, random_state=42),
-    "XGBoost Classifier": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+    "XGBoost Classifier": XGBClassifier(eval_metric='logloss', random_state=42)
 }
 
 models_reg = {
@@ -80,7 +82,7 @@ train_size = int(0.8 * len(data))
 train_data, test_data = data['Close'][:train_size], data['Close'][train_size:]
 
 # Fit ARIMA model
-arima_model = ARIMA(train_data, order=(5, 1, 0))  # Adjust (p, d, q) as needed
+arima_model = ARIMA(train_data, order=(5, 1, 0))
 arima_result = arima_model.fit()
 arima_pred = arima_result.forecast(steps=len(test_data))
 
@@ -111,7 +113,7 @@ data = yf.Ticker(ticker).history(period='5y')
 
 # Prepare the data for classification
 data = data[['Close']]
-data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)  # 1 if price increases, 0 otherwise
+data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
 data = data.dropna()
 
 # Features and target
@@ -121,50 +123,38 @@ y = data['Target']
 # Split data into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# Models
+# FIX #6: removed deprecated use_label_encoder=False from XGBClassifier
 models = {
     "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
+    "XGBoost": XGBClassifier(eval_metric='logloss', random_state=42)
 }
 
 # Store performance
 results = {}
 
 for name, model in models.items():
-    # Train the model
     model.fit(X_train, y_train)
-    
-    # Make predictions
     y_pred = model.predict(X_test)
-    
-    # Calculate accuracy
     accuracy = accuracy_score(y_test, y_pred)
     cm = confusion_matrix(y_test, y_pred)
-    
     results[name] = {
         "accuracy": accuracy,
         "confusion_matrix": cm
     }
 
 # Plot actual vs predicted for Linear Regression
-# Prepare the data for regression
-data['Target'] = data['Close'].shift(-1)  # The target is the next day's closing price
+data['Target'] = data['Close'].shift(-1)
 data = data.dropna()
 
 X_reg = data[['Close']]
 y_reg = data['Target']
 
-# Split data
 X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, shuffle=False)
 
-# Train regression model
 linear_model = LinearRegression()
 linear_model.fit(X_train_reg, y_train_reg)
-
-# Make predictions
 y_pred_reg = linear_model.predict(X_test_reg)
 
-# Plot regression
 plt.figure(figsize=(12, 6))
 plt.plot(y_test_reg.index, y_test_reg, label='Actual')
 plt.plot(y_test_reg.index, y_pred_reg, label='Predicted', linestyle='dashed')

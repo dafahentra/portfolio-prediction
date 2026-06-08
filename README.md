@@ -1,14 +1,15 @@
 # Quantitative Portfolio Prediction Dashboard
 
-An institutional-grade portfolio analysis and stock prediction platform built with Python and Streamlit. This application combines modern financial metrics with a 13-dimensional Deep Learning architecture to forecast market movements based on pure Price Action mechanics.
+An institutional-grade portfolio analysis and stock prediction platform built with Python and Streamlit. This application combines modern financial metrics with a 14-dimensional Deep Learning architecture to forecast market movements based on pure Price Action mechanics.
 
 Demo: https://portfolio-stock-pred.streamlit.app/
 
 ## Architecture
 
-This project abandons traditional fundamental analysis in favor of high-density technical feature engineering, simulating the behavior of quantitative algorithmic trading systems. 
+This project abandons traditional fundamental analysis in favor of high-density technical feature engineering, simulating the behavior of quantitative algorithmic trading systems.
 
-The machine learning pipeline (Random Forest & Multivariate LSTM) processes 13 dynamic market dimensions:
+The machine learning pipeline (Random Forest & Multivariate LSTM) processes 14 dynamic market dimensions:
+- **Base Price:** Close
 - **Momentum Indicators:** RSI, MACD, Volume
 - **Short-Term Candlestick Patterns:** Doji, Hammer, Bullish/Bearish Engulfing
 - **Long-Term Chart Patterns:** SMA 50, SMA 200, Golden Cross, Death Cross
@@ -41,7 +42,7 @@ streamlit run app.py
 
 ## Usage
 
-Input a comma-separated list of stock tickers (e.g., AAPL, MSFT, TSLA) to initialize the dashboard. The system will automatically construct the 13-dimensional matrix, train the models locally, and output the actionable predictions and risk metrics.
+Input a comma-separated list of stock tickers (e.g., AAPL, MSFT, TSLA) to initialize the dashboard. The system will automatically construct the 14-dimensional matrix, train the models locally, and output the actionable predictions and risk metrics.
 
 ## License
 

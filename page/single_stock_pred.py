@@ -1,19 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
-from utils import calculate_rsi, train_rf_model_with_graphs, train_lstm_model_with_graphs
+from utils import (
+    calculate_rsi, train_rf_model_with_graphs,
+    train_lstm_model_with_graphs, predict_next_7_days
+)
 import pandas as pd
 import numpy as np
-
-
-def _scale_feature(scaler, value, feature_idx):
-    # Per-feature scaling using the scaler's stored min/max; clipped to [0, 1]
-    if np.isnan(value):
-        return 0.0
-    feature_range = scaler.data_max_[feature_idx] - scaler.data_min_[feature_idx]
-    if feature_range == 0:
-        return 0.0
-    return float(np.clip((value - scaler.data_min_[feature_idx]) / feature_range, 0.0, 1.0))
 
 
 def single_stock_page():
@@ -86,70 +79,37 @@ def single_stock_page():
 
         model_detail.subheader("LSTM Model")
         with st.spinner("Training the model..."):
-            model_lstm, _, loss_curve_fig, scaler, last_seq = train_lstm_model_with_graphs(data)
+            # FIX #9: train_lstm_model_with_graphs now returns a 6th value (test_metrics)
+            model_lstm, _, loss_curve_fig, scaler, last_seq, lstm_metrics = train_lstm_model_with_graphs(data)
         model_detail.caption(":material/check_circle: Training complete")
+
+        # FIX #9: Display meaningful test metrics in USD scale
+        model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")
+        model_detail.write(f"Directional Accuracy: {lstm_metrics['directional_accuracy']:.1%}")
 
         model_detail.subheader("LSTM Performance Graphs")
         with model_detail.popover("Training Loss Curve", use_container_width=True):
             st.plotly_chart(loss_curve_fig, use_container_width=True)
 
         # --- 7-Day Forward Predictions ---
-        # Feature order in last_seq (from train_lstm_model_with_graphs):
-        # [0] Close  [1] Volume  [2] RSI  [3] MACD
-        # [4] Is_Doji  [5] Is_Hammer  [6] Bullish_Engulfing  [7] Bearish_Engulfing
-        # [8] SMA_50  [9] SMA_200  [10] Golden_Cross  [11] Death_Cross
-        # [12] BB_Breakout_Upper  [13] BB_Breakout_Lower
-        #
-        # RSI and MACD are recomputed each step from a rolling Close buffer.
-        # Candlestick-based features (indices 4-7) need Open/High/Low which are
-        # unavailable for future dates, so they are carried forward from the last day.
-
+        # FIX #2 & FIX #5: replaced the manual in-place prediction loop
+        # (which carried most features forward unchanged) with the unified
+        # predict_next_7_days() function that properly updates all computable
+        # indicators at every step.
         pred.subheader("Upcoming Week Predictions")
         future_dates = pd.date_range(
             start=data.index[-1] + pd.Timedelta(days=1), periods=7
         )
-        predictions = []
-        behavior = []
 
-        current_seq = last_seq.copy()
-        last_real_close = data['Close'].iloc[-1]
-
-        # Keep 250 real closes as a rolling buffer for RSI/MACD recomputation
         close_history = list(data['Close'].values[-250:])
+        volume_mean = float(data['Volume'].mean()) if 'Volume' in data.columns else 0.0
 
-        for _ in range(7):
-            input_seq = current_seq.reshape(1, current_seq.shape[0], current_seq.shape[1])
-            predicted_scaled_close = model_lstm.predict(input_seq, verbose=0)[0][0]
-
-            # Inverse-transform Close only (MinMaxScaler is per-feature)
-            pad_array = np.zeros((1, current_seq.shape[1]))
-            pad_array[0, 0] = predicted_scaled_close
-            predicted_price = float(scaler.inverse_transform(pad_array)[0][0])
-
-            predictions.append(predicted_price)
-            behavior.append("Increase" if predicted_price > last_real_close else "Decrease")
-            last_real_close = predicted_price
-
-            # Recompute RSI and MACD from the updated Close buffer
-            close_history.append(predicted_price)
-            cs = pd.Series(close_history)
-
-            delta = cs.diff()
-            gain = delta.where(delta > 0, 0.0)
-            loss_s = -delta.where(delta < 0, 0.0)
-            avg_gain = gain.ewm(com=13, min_periods=14).mean()
-            avg_loss = loss_s.ewm(com=13, min_periods=14).mean()
-            rs = avg_gain / avg_loss.replace(0, np.finfo(float).eps)
-            new_rsi = float((100 - (100 / (1 + rs))).iloc[-1])
-            new_macd = float(
-                (cs.ewm(span=12, adjust=False).mean() - cs.ewm(span=26, adjust=False).mean()).iloc[-1]
-            )
-
-            new_day = current_seq[-1].copy()
-            new_day[0] = predicted_scaled_close
-            new_day[2] = _scale_feature(scaler, new_rsi, 2)
-            new_day[3] = _scale_feature(scaler, new_macd, 3)
-            current_seq = np.append(current_seq[1:], [new_day], axis=0)
+        predictions, behavior = predict_next_7_days(
+            model_lstm, scaler, last_seq,
+            float(data['Close'].iloc[-1]),
+            close_history,
+            volume_mean
+        )
 
         predictions_df = pd.DataFrame({
             "Date": future_dates,
