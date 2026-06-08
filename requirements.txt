@@ -1,4 +1,4 @@
-yfinance>=0.2.0
+yfinance>=0.2.40,<0.3.0
 pandas==2.1.1
 scikit-learn==1.3.1
 plotly==5.11.0
@@ -6,8 +6,5 @@ numpy>=1.26.0,<2.1.0
 tensorflow==2.18.0
 matplotlib==3.9.4
 streamlit==1.41.1
-
-# XGBoost is required for exploratory model testing
-# Version >= 2.0 is used because use_label_encoder was removed
 xgboost>=2.0.0
 statsmodels>=0.14.0

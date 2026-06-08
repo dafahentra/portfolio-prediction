@@ -66,20 +66,6 @@ def sortino_ratio(returns, risk_free_rate=0.02, target_return=0):
     return ((returns.mean() - daily_rf) / downside_dev) * np.sqrt(252)
 
 
-def track_portfolio(portfolio_tickers):
-    """
-    Batched Close-price fetch: one yf.download call for all tickers instead
-    of N separate yf.Ticker().history() calls.
-    Returns a DataFrame with ticker symbols as columns and dates as the index.
-    A single-ticker download may collapse the Close column to a Series;
-    the isinstance check normalises it back to a DataFrame.
-    """
-    raw = yf.download(portfolio_tickers, period="10y", progress=False)
-    close = raw['Close']
-    if isinstance(close, pd.Series):
-        close = close.to_frame(name=portfolio_tickers[0])
-    return close
-
 
 def _scale_feature(scaler, value, feature_idx):
     """
@@ -485,6 +471,10 @@ def train_lstm_model_with_graphs(data):
     pad_actual[:, 0] = y_test
     y_actual_prices = scaler.inverse_transform(pad_actual)[:, 0]
 
+    # Note: y_actual_prices reflects clip=True scaled values. For growth stocks
+    # where test-period prices exceed the training-period maximum, actuals are
+    # capped at that training peak, which understates the true RMSE. This is
+    # the accepted trade-off of fitting the scaler on training data only.
     rmse = float(np.sqrt(mean_squared_error(y_actual_prices, y_pred_prices)))
     dir_acc = float(
         np.mean(np.sign(np.diff(y_pred_prices)) == np.sign(np.diff(y_actual_prices)))

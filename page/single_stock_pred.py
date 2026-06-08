@@ -134,9 +134,20 @@ def single_stock_page():
         close_history = list(data['Close'].values[-250:])
         volume_mean = float(data['Volume'].mean()) if 'Volume' in data.columns else 0.0
 
+        # Derive last_real_close from last_seq via inverse_transform.
+        # _get_trained_lstm_single downloads data internally (yf.Ticker().history)
+        # while `data` on this page is a separate download — different API calls
+        # that may diverge by one trading day due to cache age or timing.
+        # Using inverse_transform ties the comparison price directly to what
+        # the LSTM saw last, keeping Increase / Decrease labels consistent
+        # with the model's output scale.
+        pad_last = np.zeros((1, last_seq.shape[1]))
+        pad_last[0, 0] = float(last_seq[-1, 0])
+        last_real_close = float(scaler.inverse_transform(pad_last)[0][0])
+
         predictions, behavior = predict_next_7_days(
             model_lstm, scaler, last_seq,
-            float(data['Close'].iloc[-1]),
+            last_real_close,
             close_history,
             volume_mean
         )

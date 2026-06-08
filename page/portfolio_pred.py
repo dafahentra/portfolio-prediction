@@ -96,7 +96,13 @@ def portfolio_pred_page():
 
     # Download full OHLCV for all tickers in one batched call; result is cached
     # for 1 hour to avoid repeated API calls across Streamlit re-runs.
-    full_data = _load_portfolio_history(tuple(tickers_list))
+    # try/except catches KeyError (invalid ticker not found in download result)
+    # before it propagates past the graceful error check below.
+    try:
+        full_data = _load_portfolio_history(tuple(tickers_list))
+    except Exception as e:
+        st.error(f"Failed to load market data: {e}. Please verify all ticker symbols.")
+        return
 
     if not all(t in full_data and not full_data[t].empty for t in tickers_list):
         st.error("Some tickers returned no data. Please verify all symbols are valid.")
@@ -211,7 +217,19 @@ def portfolio_pred_page():
             if 'Volume' in historical_data.columns else 0.0
         )
 
-        last_real_close = float(historical_data['Close'].iloc[-1])
+        # Derive last_real_close from last_seq via inverse_transform instead of
+        # historical_data['Close'].iloc[-1]. Both should be identical in practice,
+        # but last_seq comes from the LSTM training download (yf.Ticker().history)
+        # while historical_data comes from _load_portfolio_history (yf.download) —
+        # two different API paths that could diverge by one trading day due to
+        # cache age or timezone handling. Using inverse_transform guarantees the
+        # comparison price is exactly what the LSTM saw last, keeping
+        # Increase / Decrease labels internally consistent with the model's scale.
+        # With clip=True: if the actual last Close exceeded the training maximum,
+        # this gives the training-period peak (the LSTM's effective upper bound).
+        pad_last = np.zeros((1, last_seq.shape[1]))
+        pad_last[0, 0] = float(last_seq[-1, 0])
+        last_real_close = float(scaler.inverse_transform(pad_last)[0][0])
         preds, behavior = predict_next_7_days(
             model_lstm, scaler, last_seq, last_real_close, close_history, volume_mean
         )
