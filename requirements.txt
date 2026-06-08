@@ -7,7 +7,7 @@ tensorflow==2.18.0
 matplotlib==3.9.4
 streamlit==1.41.1
 
-# FIX #6: required by model_testing.py (exploratory, not part of the main app)
-# xgboost >= 2.0 required — use_label_encoder was removed in 2.0
+# XGBoost is required for exploratory model testing
+# Version >= 2.0 is used because use_label_encoder was removed
 xgboost>=2.0.0
 statsmodels>=0.14.0

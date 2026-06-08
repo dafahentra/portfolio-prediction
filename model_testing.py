@@ -35,7 +35,7 @@ X_train_class, X_test_class, y_train_class, y_test_class = train_test_split(X_cl
 X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, shuffle=False)
 
 # Initialize models
-# FIX #6: removed deprecated use_label_encoder=False parameter
+# Removed deprecated use_label_encoder=False parameter
 # (removed in XGBoost >= 2.0; use eval_metric directly instead)
 models_class = {
     "Random Forest Classifier": RandomForestClassifier(n_estimators=100, random_state=42),
@@ -123,7 +123,7 @@ y = data['Target']
 # Split data into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
-# FIX #6: removed deprecated use_label_encoder=False from XGBClassifier
+# Initialize classification models
 models = {
     "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
     "XGBoost": XGBClassifier(eval_metric='logloss', random_state=42)

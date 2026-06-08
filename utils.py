@@ -42,14 +42,10 @@ def sharpe_ratio(returns, risk_free_rate=0.02):
 
 def sortino_ratio(returns, risk_free_rate=0.02, target_return=0):
     """
-    FIX #1 — Sortino Ratio: correct semi-deviation formula.
+    Sortino Ratio calculation with the correct semi-deviation formula.
 
     Standard definition (Frank Sortino / CFA Institute):
         σ_d = sqrt( mean( min(R_i - MAR, 0)^2 ) )
-
-    Previous implementation incorrectly used:
-        std( {R_i | R_i < 0} )   ← wrong centering (mean of negatives, not MAR)
-                                  ← wrong denominator (n_down-1, not N_total)
     """
     daily_rf = risk_free_rate / 252
     downside_diff = np.minimum(returns - target_return, 0)
@@ -61,7 +57,7 @@ def sortino_ratio(returns, risk_free_rate=0.02, target_return=0):
 
 def track_portfolio(portfolio_tickers):
     """
-    FIX #8 — Batched fetch: one yf.download call for all tickers instead of N
+    Batched fetch: one yf.download call for all tickers instead of N
     separate yf.Ticker(...).history() calls.
 
     Returns a DataFrame with ticker symbols as columns.
@@ -91,9 +87,8 @@ def _scale_feature(scaler, value, feature_idx):
 def predict_next_7_days(model_lstm, scaler, last_seq, last_real_close,
                         close_history, volume_mean):
     """
-    FIX #2 & FIX #5 — Unified autoregressive 7-day forecast with properly
-    updated features at each step (replaces two divergent implementations
-    in single_stock_pred.py and portfolio_pred.py).
+    Unified autoregressive 7-day forecast with properly
+    updated features at each step.
 
     What is updated each step:
         Close        — predicted by LSTM
@@ -217,12 +212,12 @@ def add_price_action_features(data):
     """
     Compute all 14 technical features used by both RF and LSTM models.
 
-    FIX #7 — RSI is now computed by calling calculate_rsi() instead of
-    duplicating the same Wilder's EWM logic inline.
+    RSI is computed by calling calculate_rsi() instead of
+    duplicating the EWM logic inline.
     """
     data = data.copy()
 
-    # FIX #7: delegate to calculate_rsi — eliminates the duplicated logic
+    # Delegate to calculate_rsi to eliminate duplicated logic
     data['RSI'] = calculate_rsi(data)
 
     # MACD (12/26 EMA difference)
@@ -348,11 +343,11 @@ def train_lstm_model_with_graphs(data):
     """
     Train a multivariate LSTM on 14 price-action features with 50-day lookback.
 
-    FIX #4 — Off-by-one in create_dataset corrected:
+    Off-by-one in create_dataset corrected:
         range(N - time_step - 1) → range(N - time_step)
         Previous code wasted the last data point as a training target.
 
-    FIX #9 — Returns test_metrics dict with meaningful evaluation in USD:
+    Returns test_metrics dict with meaningful evaluation in USD:
         'rmse'                : RMSE of test-set Close predictions in USD
         'directional_accuracy': fraction of correctly predicted price directions
 
@@ -386,7 +381,7 @@ def train_lstm_model_with_graphs(data):
 
     def create_dataset(dataset, time_step=50):
         """
-        FIX #4: range(N - time_step) instead of range(N - time_step - 1).
+        Use range(N - time_step) instead of range(N - time_step - 1).
         The previous '-1' caused the last row to never be used as a y target,
         wasting one training sample per fit.
         """
@@ -426,7 +421,7 @@ def train_lstm_model_with_graphs(data):
         verbose=0
     )
 
-    # --- FIX #9: Evaluate on test set in USD (meaningful scale) ---
+    # --- Evaluate on test set in USD (meaningful scale) ---
     y_pred_scaled = model.predict(X_test, verbose=0).flatten()
     n_features = X.shape[2]
 

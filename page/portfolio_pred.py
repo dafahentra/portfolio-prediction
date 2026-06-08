@@ -15,7 +15,7 @@ def _get_trained_lstm_cached(ticker: str):
     """
     Cached per-ticker LSTM training; avoids retraining on every Streamlit re-run.
 
-    FIX #10: raises a clear ValueError if yfinance returns no data for
+    Raises a clear ValueError if yfinance returns no data for
     the ticker, instead of propagating a cryptic crash from inside
     train_lstm_model_with_graphs.
     """
@@ -60,7 +60,7 @@ def portfolio_pred_page():
 
     weights = [w / total_w for w in weights_input]
 
-    # FIX #8: track_portfolio now uses one batched yf.download call
+    # track_portfolio uses one batched yf.download call
     portfolio_df = track_portfolio(tickers_list)
     if not all(ticker in portfolio_df.columns for ticker in tickers_list):
         st.error("Some of the specified tickers are missing in the portfolio data.")
@@ -93,7 +93,7 @@ def portfolio_pred_page():
     portfolio_daily_returns = (returns * weights).sum(axis=1)
 
     for i, ticker in enumerate(tickers_list):
-        # FIX #1: sortino_ratio now uses the correct semi-deviation formula
+        # sortino_ratio uses the correct semi-deviation formula
         sharpe = sharpe_ratio(returns[ticker])
         sortino = sortino_ratio(returns[ticker])
         sortino_str = f"{sortino:.2f}" if not np.isnan(sortino) else "N/A"
@@ -161,18 +161,17 @@ def portfolio_pred_page():
         historical_data = stock.history(period="10y")
         full_data[ticker] = historical_data
 
-        # FIX #10: wrap cache call in try/except for user-friendly error messages
+        # Wrap cache call in try/except for user-friendly error messages
         try:
             with st.spinner(f"Preparing LSTM for {ticker}..."):
-                # FIX #9: _get_trained_lstm_cached now returns 6 values
+                # _get_trained_lstm_cached returns 6 values
                 model_lstm, _, _, scaler, last_seq, _ = _get_trained_lstm_cached(ticker)
         except Exception as e:
             st.error(f"Could not prepare LSTM for {ticker}: {e}")
             continue
 
-        # FIX #2 & FIX #5: replaced _predict_next_7_days (which froze all
-        # features at last real day values) with the unified predict_next_7_days
-        # that properly updates all computable indicators each step.
+        # Use the unified predict_next_7_days to properly update
+        # all computable indicators each step.
         close_history = list(historical_data['Close'].values[-250:])
         volume_mean = float(historical_data['Volume'].mean()) if 'Volume' in historical_data.columns else 0.0
 
@@ -233,7 +232,7 @@ def portfolio_pred_page():
 
     model_detail.subheader("LSTM Model")
     try:
-        # FIX #9: unpack 6th return value to display meaningful test metrics
+        # Unpack 6th return value to display meaningful test metrics
         _, _, loss_curve_fig, _, _, lstm_metrics = _get_trained_lstm_cached(tickers_list[0])
         model_detail.caption(":material/check_circle: Training complete")
         model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")

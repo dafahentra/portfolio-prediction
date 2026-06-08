@@ -79,11 +79,11 @@ def single_stock_page():
 
         model_detail.subheader("LSTM Model")
         with st.spinner("Training the model..."):
-            # FIX #9: train_lstm_model_with_graphs now returns a 6th value (test_metrics)
+            # Unpack the 6th return value (test_metrics)
             model_lstm, _, loss_curve_fig, scaler, last_seq, lstm_metrics = train_lstm_model_with_graphs(data)
         model_detail.caption(":material/check_circle: Training complete")
 
-        # FIX #9: Display meaningful test metrics in USD scale
+        # Display meaningful test metrics in USD scale
         model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")
         model_detail.write(f"Directional Accuracy: {lstm_metrics['directional_accuracy']:.1%}")
 
@@ -92,10 +92,8 @@ def single_stock_page():
             st.plotly_chart(loss_curve_fig, use_container_width=True)
 
         # --- 7-Day Forward Predictions ---
-        # FIX #2 & FIX #5: replaced the manual in-place prediction loop
-        # (which carried most features forward unchanged) with the unified
-        # predict_next_7_days() function that properly updates all computable
-        # indicators at every step.
+        # Use the unified predict_next_7_days() function to properly update
+        # all computable indicators at every step.
         pred.subheader("Upcoming Week Predictions")
         future_dates = pd.date_range(
             start=data.index[-1] + pd.Timedelta(days=1), periods=7
