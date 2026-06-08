@@ -9,6 +9,28 @@ import pandas as pd
 import numpy as np
 
 
+@st.cache_resource(show_spinner=False)
+def _get_trained_lstm_single(ticker: str):
+    """
+    Train and cache the LSTM model for a given ticker.
+
+    @st.cache_resource persists the Keras model object in memory across
+    Streamlit re-runs without serialising it, so the model is trained at
+    most once per ticker per server session.
+
+    Raises ValueError if yfinance returns no data for the ticker,
+    surfacing a readable error instead of a cryptic crash inside the
+    training pipeline.
+    """
+    data = yf.Ticker(ticker).history(period="10y")
+    if data.empty:
+        raise ValueError(
+            f"No historical data found for ticker '{ticker}'. "
+            "Check that the symbol is valid."
+        )
+    return train_lstm_model_with_graphs(data)
+
+
 def single_stock_page():
     st.header("Single Stock Prediction")
 
@@ -78,12 +100,20 @@ def single_stock_page():
             st.plotly_chart(precision_recall_fig, use_container_width=True)
 
         model_detail.subheader("LSTM Model")
-        with st.spinner("Training the model..."):
-            # Unpack the 6th return value (test_metrics)
-            model_lstm, _, loss_curve_fig, scaler, last_seq, lstm_metrics = train_lstm_model_with_graphs(data)
+
+        # Retrieve the LSTM from cache; training only occurs on the first call
+        # for this ticker. Subsequent Streamlit re-runs use the cached model.
+        try:
+            with st.spinner(f"Preparing LSTM for {ticker}..."):
+                model_lstm, _, loss_curve_fig, scaler, last_seq, lstm_metrics = \
+                    _get_trained_lstm_single(ticker)
+        except Exception as e:
+            st.error(f"Could not prepare LSTM for {ticker}: {e}")
+            return
+
         model_detail.caption(":material/check_circle: Training complete")
 
-        # Display meaningful test metrics in USD scale
+        # Test metrics are reported in USD (original price scale) for interpretability
         model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")
         model_detail.write(f"Directional Accuracy: {lstm_metrics['directional_accuracy']:.1%}")
 
@@ -92,10 +122,12 @@ def single_stock_page():
             st.plotly_chart(loss_curve_fig, use_container_width=True)
 
         # --- 7-Day Forward Predictions ---
-        # Use the unified predict_next_7_days() function to properly update
-        # all computable indicators at every step.
         pred.subheader("Upcoming Week Predictions")
-        future_dates = pd.date_range(
+
+        # pd.bdate_range produces business days only (Mon–Fri), matching the
+        # trading-day cadence of the LSTM's autoregressive sequence.
+        # pd.date_range would incorrectly label predictions on weekends.
+        future_dates = pd.bdate_range(
             start=data.index[-1] + pd.Timedelta(days=1), periods=7
         )
 

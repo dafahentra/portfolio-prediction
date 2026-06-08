@@ -3,26 +3,60 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from utils import (
-    track_portfolio, train_rf_model_with_graphs,
+    train_rf_model_with_graphs,
     train_lstm_model_with_graphs, sharpe_ratio, sortino_ratio, format_price,
     predict_next_7_days
 )
 import plotly.graph_objects as go
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def _load_portfolio_history(tickers: tuple) -> dict[str, pd.DataFrame]:
+    """
+    Download full OHLCV data for all tickers in a single batched API call.
+    Returns a per-ticker dict of DataFrames keyed by symbol.
+
+    Using one yf.download call instead of N separate yf.Ticker().history()
+    calls reduces API round-trips and avoids re-downloading on every Streamlit
+    re-run thanks to @st.cache_data (TTL: 1 hour).
+
+    For a single-ticker download, yfinance may return flat or MultiIndex columns
+    depending on the version; the isinstance check normalises both cases.
+    For multi-ticker downloads, yf.download returns a (metric, ticker) MultiIndex
+    which xs() slices into per-ticker DataFrames with metric columns.
+    """
+    raw = yf.download(list(tickers), period="10y", progress=False)
+    result = {}
+    for ticker in tickers:
+        if len(tickers) == 1:
+            df = raw.copy()
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] for col in df.columns]
+        else:
+            df = raw.xs(ticker, axis=1, level=1).copy()
+        result[ticker] = df.dropna(how="all")
+    return result
+
+
 @st.cache_resource(show_spinner=False)
 def _get_trained_lstm_cached(ticker: str):
     """
-    Cached per-ticker LSTM training; avoids retraining on every Streamlit re-run.
+    Train and cache the LSTM model for a given ticker.
 
-    Raises a clear ValueError if yfinance returns no data for
-    the ticker, instead of propagating a cryptic crash from inside
-    train_lstm_model_with_graphs.
+    @st.cache_resource persists the Keras model object in memory across
+    Streamlit re-runs without serialising it, so the model is trained at
+    most once per ticker per server session.
+
+    Raises ValueError if yfinance returns no data for the ticker,
+    surfacing a readable error instead of a cryptic crash inside the
+    training pipeline.
     """
     data = yf.Ticker(ticker).history(period="10y")
     if data.empty:
-        raise ValueError(f"No historical data found for ticker '{ticker}'. "
-                         "Check that the symbol is valid.")
+        raise ValueError(
+            f"No historical data found for ticker '{ticker}'. "
+            "Check that the symbol is valid."
+        )
     return train_lstm_model_with_graphs(data)
 
 
@@ -60,22 +94,29 @@ def portfolio_pred_page():
 
     weights = [w / total_w for w in weights_input]
 
-    # track_portfolio uses one batched yf.download call
-    portfolio_df = track_portfolio(tickers_list)
-    if not all(ticker in portfolio_df.columns for ticker in tickers_list):
-        st.error("Some of the specified tickers are missing in the portfolio data.")
+    # Download full OHLCV for all tickers in one batched call; result is cached
+    # for 1 hour to avoid repeated API calls across Streamlit re-runs.
+    full_data = _load_portfolio_history(tuple(tickers_list))
+
+    if not all(t in full_data and not full_data[t].empty for t in tickers_list):
+        st.error("Some tickers returned no data. Please verify all symbols are valid.")
         return
+
+    # Build a Close-only DataFrame for portfolio-level analytics
+    portfolio_df = pd.DataFrame({t: full_data[t]['Close'] for t in tickers_list})
 
     # --- Stock Information ---
     st.subheader("Stock Information")
     stock_info = []
     for ticker in tickers_list:
         stock = yf.Ticker(ticker)
-        todays_data = stock.history(period="1d")
+        # Last known Close comes from the already-downloaded full_data;
+        # only stock.info (metadata) requires a separate yfinance call
+        last_close = full_data[ticker]['Close'].iloc[-1]
         stock_info.append({
             "Ticker": ticker,
             "Name": stock.info.get('shortName', ticker),
-            "Price": format_price(todays_data['Close'].iloc[0])
+            "Price": format_price(last_close)
         })
     st.dataframe(pd.DataFrame(stock_info), hide_index=True, use_container_width=True)
 
@@ -93,7 +134,6 @@ def portfolio_pred_page():
     portfolio_daily_returns = (returns * weights).sum(axis=1)
 
     for i, ticker in enumerate(tickers_list):
-        # sortino_ratio uses the correct semi-deviation formula
         sharpe = sharpe_ratio(returns[ticker])
         sortino = sortino_ratio(returns[ticker])
         sortino_str = f"{sortino:.2f}" if not np.isnan(sortino) else "N/A"
@@ -154,33 +194,32 @@ def portfolio_pred_page():
     # --- 7-Day LSTM Predictions (one model per ticker, results cached) ---
     st.subheader("Stock Predictions for the Next 7 Days")
 
-    full_data: dict[str, pd.DataFrame] = {}
-
     for ticker in tickers_list:
-        stock = yf.Ticker(ticker)
-        historical_data = stock.history(period="10y")
-        full_data[ticker] = historical_data
+        # Use OHLCV data from the already-cached batched download
+        historical_data = full_data[ticker]
 
-        # Wrap cache call in try/except for user-friendly error messages
         try:
             with st.spinner(f"Preparing LSTM for {ticker}..."):
-                # _get_trained_lstm_cached returns 6 values
                 model_lstm, _, _, scaler, last_seq, _ = _get_trained_lstm_cached(ticker)
         except Exception as e:
             st.error(f"Could not prepare LSTM for {ticker}: {e}")
             continue
 
-        # Use the unified predict_next_7_days to properly update
-        # all computable indicators each step.
         close_history = list(historical_data['Close'].values[-250:])
-        volume_mean = float(historical_data['Volume'].mean()) if 'Volume' in historical_data.columns else 0.0
+        volume_mean = (
+            float(historical_data['Volume'].mean())
+            if 'Volume' in historical_data.columns else 0.0
+        )
 
         last_real_close = float(historical_data['Close'].iloc[-1])
         preds, behavior = predict_next_7_days(
             model_lstm, scaler, last_seq, last_real_close, close_history, volume_mean
         )
 
-        future_dates = pd.date_range(
+        # pd.bdate_range produces business days only (Mon–Fri), matching the
+        # trading-day cadence of the LSTM's autoregressive sequence.
+        # pd.date_range would incorrectly label predictions on weekends.
+        future_dates = pd.bdate_range(
             start=historical_data.index[-1] + pd.Timedelta(days=1), periods=7
         )
         prediction_df = pd.DataFrame({
@@ -189,6 +228,7 @@ def portfolio_pred_page():
             'Behavior': behavior
         })
 
+        stock = yf.Ticker(ticker)
         with st.expander(f"{ticker} — {stock.info.get('shortName', ticker)}"):
             st.write(f"{ticker} — Predicted Prices for the Next 7 Days")
             st.dataframe(prediction_df, use_container_width=True, hide_index=True)
@@ -210,14 +250,15 @@ def portfolio_pred_page():
     st.sidebar.divider()
     model_detail = st.sidebar.container(border=True)
 
-    first_ticker_full_data = full_data.get(tickers_list[0])
+    # RF and LSTM metrics are shown for the first ticker in the portfolio
+    first_ticker_data = full_data.get(tickers_list[0])
 
     model_detail.subheader("Random Forest Model")
-    if first_ticker_full_data is not None and not first_ticker_full_data.empty:
+    if first_ticker_data is not None and not first_ticker_data.empty:
         try:
             with st.spinner("Training Random Forest..."):
                 _, accuracy, confusion_matrix_fig, precision_recall_fig = train_rf_model_with_graphs(
-                    first_ticker_full_data
+                    first_ticker_data
                 )
             model_detail.caption(":material/check_circle: Training complete")
             model_detail.write(f"CV Accuracy (5-fold TimeSeriesCV): {accuracy:.2f}")
@@ -232,9 +273,11 @@ def portfolio_pred_page():
 
     model_detail.subheader("LSTM Model")
     try:
-        # Unpack 6th return value to display meaningful test metrics
+        # Retrieve cached LSTM for the first ticker to display training metrics
         _, _, loss_curve_fig, _, _, lstm_metrics = _get_trained_lstm_cached(tickers_list[0])
         model_detail.caption(":material/check_circle: Training complete")
+
+        # Test metrics are reported in USD (original price scale) for interpretability
         model_detail.write(f"Test RMSE: ${lstm_metrics['rmse']:.2f}")
         model_detail.write(f"Directional Accuracy: {lstm_metrics['directional_accuracy']:.1%}")
 

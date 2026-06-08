@@ -1,3 +1,11 @@
+"""
+model_testing.py — Exploratory model comparison script (not part of the main app).
+
+Compares classification and regression approaches for next-day price prediction
+on a single stock before the multivariate LSTM pipeline was finalised.
+Models tested: Random Forest, XGBoost, Linear Regression (regression), ARIMA.
+"""
+
 import yfinance as yf
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -8,164 +16,120 @@ from sklearn.metrics import accuracy_score, confusion_matrix, mean_squared_error
 from statsmodels.tsa.arima.model import ARIMA
 import matplotlib.pyplot as plt
 
-# Fetch historical data for the stock
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+
 ticker = 'AAPL'
-data = yf.Ticker(ticker).history(period='5y')
+raw = yf.Ticker(ticker).history(period='5y')
+raw = raw[['Close', 'Volume']]
 
-# Prepare the data for modeling
-data = data[['Close']]
+# ---------------------------------------------------------------------------
+# Classification target: 1 if next-day Close > today's Close, else 0
+# ---------------------------------------------------------------------------
 
-# Classification: Predict if price increases
-data['Target_Classifier'] = (data['Close'].shift(-1) > data['Close']).astype(int)
-data = data.dropna()
+clf_data = raw.copy()
+clf_data['Target'] = (clf_data['Close'].shift(-1) > clf_data['Close']).astype(int)
+clf_data = clf_data.dropna()
 
-# Features and target for classification
-X_class = data[['Close']]
-y_class = data['Target_Classifier']
+X_clf = clf_data[['Close']]
+y_clf = clf_data['Target']
 
-# Prepare regression target
-data['Target_Regressor'] = data['Close'].shift(-1)
-data = data.dropna()
+X_train_clf, X_test_clf, y_train_clf, y_test_clf = train_test_split(
+    X_clf, y_clf, test_size=0.2, shuffle=False
+)
 
-X_reg = data[['Close']]
-y_reg = data['Target_Regressor']
-
-# Split data into training and testing sets
-X_train_class, X_test_class, y_train_class, y_test_class = train_test_split(X_class, y_class, test_size=0.2, shuffle=False)
-X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, shuffle=False)
-
-# Initialize models
-# Removed deprecated use_label_encoder=False parameter
-# (removed in XGBoost >= 2.0; use eval_metric directly instead)
-models_class = {
-    "Random Forest Classifier": RandomForestClassifier(n_estimators=100, random_state=42),
-    "XGBoost Classifier": XGBClassifier(eval_metric='logloss', random_state=42)
+# Classification models
+# XGBClassifier: eval_metric is passed directly; use_label_encoder was removed in XGBoost >= 2.0
+classifiers = {
+    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
+    "XGBoost":       XGBClassifier(eval_metric='logloss', random_state=42),
 }
 
-models_reg = {
-    "Random Forest Regressor": RandomForestRegressor(n_estimators=100, random_state=42),
-    "XGBoost Regressor": XGBRegressor(n_estimators=100, random_state=42)
-}
+print("=== Classification Results ===")
+for name, model in classifiers.items():
+    model.fit(X_train_clf, y_train_clf)
+    y_pred = model.predict(X_test_clf)
+    acc = accuracy_score(y_test_clf, y_pred)
+    cm  = confusion_matrix(y_test_clf, y_pred)
+    print(f"{name}  Accuracy: {acc:.2f}")
+    print("Confusion Matrix:")
+    print(cm)
+    print("-" * 40)
 
-# Train and evaluate classification models
-for name, model in models_class.items():
-    model.fit(X_train_class, y_train_class)
-    y_pred = model.predict(X_test_class)
-    accuracy = accuracy_score(y_test_class, y_pred)
-    print(f"{name} Accuracy: {accuracy:.2f}")
-    
-    # Plot classification results
-    plt.figure(figsize=(12, 6))
-    plt.plot(y_test_class.index, y_test_class, label='Actual (Increase: 1, Decrease: 0)', linestyle='-')
-    plt.plot(y_test_class.index, y_pred, label=f'{name} Predictions', linestyle='dotted')
+    plt.figure(figsize=(12, 4))
+    plt.plot(y_test_clf.index, y_test_clf.values, label='Actual (1=Up, 0=Down)')
+    plt.plot(y_test_clf.index, y_pred,            label=f'{name} Predictions', linestyle='dotted')
     plt.legend()
-    plt.title(f'{ticker} Stock Price Direction Prediction ({name})')
+    plt.title(f'{ticker} Price Direction — {name}')
+    plt.tight_layout()
     plt.show()
 
-# Train and evaluate regression models
-for name, model in models_reg.items():
+# ---------------------------------------------------------------------------
+# Regression target: next-day Close price
+# ---------------------------------------------------------------------------
+
+reg_data = raw.copy()
+reg_data['Target'] = reg_data['Close'].shift(-1)
+reg_data = reg_data.dropna()
+
+X_reg = reg_data[['Close']]
+y_reg = reg_data['Target']
+
+X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(
+    X_reg, y_reg, test_size=0.2, shuffle=False
+)
+
+# Linear Regression baseline
+linear_model = LinearRegression()
+linear_model.fit(X_train_reg, y_train_reg)
+y_pred_lr = linear_model.predict(X_test_reg)
+
+plt.figure(figsize=(12, 4))
+plt.plot(y_test_reg.index, y_test_reg.values, label='Actual')
+plt.plot(y_test_reg.index, y_pred_lr,         label='Linear Regression', linestyle='dashed')
+plt.legend()
+plt.title(f'{ticker} Price Prediction — Linear Regression')
+plt.tight_layout()
+plt.show()
+
+# Ensemble regressors
+regressors = {
+    "Random Forest": RandomForestRegressor(n_estimators=100, random_state=42),
+    "XGBoost":       XGBRegressor(n_estimators=100, random_state=42),
+}
+
+print("\n=== Regression Results ===")
+for name, model in regressors.items():
     model.fit(X_train_reg, y_train_reg)
     y_pred = model.predict(X_test_reg)
     mse = mean_squared_error(y_test_reg, y_pred)
-    print(f"{name} Mean Squared Error: {mse:.2f}")
-    
-    # Plot regression results
-    plt.figure(figsize=(12, 6))
-    plt.plot(y_test_reg.index, y_test_reg, label='Actual')
-    plt.plot(y_test_reg.index, y_pred, label=f'{name} Predictions', linestyle='dotted')
+    print(f"{name}  MSE: {mse:.2f}")
+
+    plt.figure(figsize=(12, 4))
+    plt.plot(y_test_reg.index, y_test_reg.values, label='Actual')
+    plt.plot(y_test_reg.index, y_pred,             label=f'{name}', linestyle='dotted')
     plt.legend()
-    plt.title(f'{ticker} Stock Price Prediction ({name})')
+    plt.title(f'{ticker} Price Prediction — {name}')
+    plt.tight_layout()
     plt.show()
 
-# ARIMA model
-train_size = int(0.8 * len(data))
-train_data, test_data = data['Close'][:train_size], data['Close'][train_size:]
+# ---------------------------------------------------------------------------
+# ARIMA time-series baseline
+# ---------------------------------------------------------------------------
 
-# Fit ARIMA model
-arima_model = ARIMA(train_data, order=(5, 1, 0))
+series = raw['Close']
+train_size = int(0.8 * len(series))
+train_series, test_series = series.iloc[:train_size], series.iloc[train_size:]
+
+arima_model  = ARIMA(train_series, order=(5, 1, 0))
 arima_result = arima_model.fit()
-arima_pred = arima_result.forecast(steps=len(test_data))
+arima_pred   = arima_result.forecast(steps=len(test_series))
 
-# Plot ARIMA results
-plt.figure(figsize=(12, 6))
-plt.plot(test_data.index, test_data, label='Actual')
-plt.plot(test_data.index, arima_pred, label='ARIMA Predictions', linestyle='dotted')
+plt.figure(figsize=(12, 4))
+plt.plot(test_series.index, test_series.values, label='Actual')
+plt.plot(test_series.index, arima_pred,         label='ARIMA (5,1,0)', linestyle='dotted')
 plt.legend()
-plt.title(f'{ticker} Stock Price Prediction (ARIMA)')
+plt.title(f'{ticker} Price Prediction — ARIMA')
+plt.tight_layout()
 plt.show()
-
-
-
-#----------- Decided -------------------------
-
-import yfinance as yf
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix
-import matplotlib.pyplot as plt
-
-# Fetch historical data for the stock
-ticker = 'AAPL'
-data = yf.Ticker(ticker).history(period='5y')
-
-# Prepare the data for classification
-data = data[['Close']]
-data['Target'] = (data['Close'].shift(-1) > data['Close']).astype(int)
-data = data.dropna()
-
-# Features and target
-X = data[['Close']]
-y = data['Target']
-
-# Split data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-
-# Initialize classification models
-models = {
-    "Random Forest": RandomForestClassifier(n_estimators=100, random_state=42),
-    "XGBoost": XGBClassifier(eval_metric='logloss', random_state=42)
-}
-
-# Store performance
-results = {}
-
-for name, model in models.items():
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    cm = confusion_matrix(y_test, y_pred)
-    results[name] = {
-        "accuracy": accuracy,
-        "confusion_matrix": cm
-    }
-
-# Plot actual vs predicted for Linear Regression
-data['Target'] = data['Close'].shift(-1)
-data = data.dropna()
-
-X_reg = data[['Close']]
-y_reg = data['Target']
-
-X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(X_reg, y_reg, test_size=0.2, shuffle=False)
-
-linear_model = LinearRegression()
-linear_model.fit(X_train_reg, y_train_reg)
-y_pred_reg = linear_model.predict(X_test_reg)
-
-plt.figure(figsize=(12, 6))
-plt.plot(y_test_reg.index, y_test_reg, label='Actual')
-plt.plot(y_test_reg.index, y_pred_reg, label='Predicted', linestyle='dashed')
-plt.legend()
-plt.title(f'{ticker} Stock Price Prediction (Linear Regression)')
-plt.show()
-
-# Print classification results
-for name, metrics in results.items():
-    print(f"Model: {name}")
-    print(f"Accuracy: {metrics['accuracy']:.2f}")
-    print("Confusion Matrix:")
-    print(metrics['confusion_matrix'])
-    print("-" * 30)
